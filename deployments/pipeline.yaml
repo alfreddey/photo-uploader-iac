@@ -1,0 +1,14 @@
+# Git sync deployment file for stack: photo-uploader-pipeline
+template-file-path: 5-pipeline.yaml
+parameters:
+  ProjectName: photo-uploader
+  Environment: dev
+  DataStackName: photo-uploader-data
+  ComputeStackName: photo-uploader-compute
+  GitHubOrg: alfreddey
+  GitHubRepo: photo-uploader-app
+  ImageTag: latest
+tags:
+  Project: photo-uploader
+  Environment: dev
+  ManagedBy: CloudFormation

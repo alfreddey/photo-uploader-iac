@@ -1,0 +1,10 @@
+# Git sync deployment file for stack: photo-uploader-edge
+template-file-path: 3-edge.yaml
+parameters:
+  ProjectName: photo-uploader
+  Environment: dev
+  DataStackName: photo-uploader-data
+tags:
+  Project: photo-uploader
+  Environment: dev
+  ManagedBy: CloudFormation
