@@ -1,0 +1,469 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Deploy as stack name: photo-uploader-pipeline
+# Depends on exports from: photo-uploader-data, photo-uploader-compute
+Description: >-
+  Photo-gallery | Stack 5 of 5 - Pipeline. ECR repository, GitHub OIDC provider
+  and deploy role (no long-lived credentials), CodeDeploy ECS blue/green
+  application + deployment group, CodePipeline (ECR image source + S3
+  deploy-config source -> CodeDeployToECS), and the EventBridge rule that starts
+  the pipeline on every image push. ECS task execution/task roles live in the
+  compute stack to avoid a circular import; only CI/CD roles are here.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: photo-uploader
+    Description: Project name used for resource names and tags.
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name used for resource names and tags.
+  DataStackName:
+    Type: String
+    Default: photo-uploader-data
+    Description: Name of the data stack whose exports are imported here.
+  ComputeStackName:
+    Type: String
+    Default: photo-uploader-compute
+    Description: Name of the compute stack whose exports are imported here.
+  GitHubOrg:
+    Type: String
+    Default: alfreddey
+    Description: GitHub org/user that owns the application repository.
+  GitHubRepo:
+    Type: String
+    Default: photo-uploader-app
+    Description: Application repository name (the repo allowed to assume the deploy role).
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: ECR image tag that triggers and feeds the pipeline.
+  DeployConfigS3Key:
+    Type: String
+    Default: deploy/deploy-config.zip
+    Description: >-
+      Key in the artifact bucket of a zip containing appspec.yaml and
+      taskdef.json (taskdef's image field must be the placeholder
+      <IMAGE1_NAME>). The CodeDeployToECS action needs these alongside the ECR
+      image; upload the zip once before the first pipeline run.
+
+Resources:
+  # --------------------------------------------------------------- ECR
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "${ProjectName}-${Environment}"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 14 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 14
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- GitHub OIDC
+  # Federated trust with GitHub Actions: CI exchanges its OIDC token for
+  # short-lived AWS credentials - no access keys stored in GitHub.
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS now pins GitHub's root CA and ignores thumbprints, but the property
+      # is still required; these are the published GitHub OIDC thumbprints.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  GitHubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-github-deploy"
+      Description: Assumed by GitHub Actions in the app repo via OIDC to push images to ECR.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Scoped to the APP repo only (any branch/ref).
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
+      Policies:
+        - PolicyName: ecr-push
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # GetAuthorizationToken does not support resource-level scoping.
+              - Sid: EcrAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPushPull
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: !GetAtt EcrRepository.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- CI/CD roles
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-codedeploy"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # AWS managed policy purpose-built for ECS blue/green deployments.
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSCodeDeployRoleForECS"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-codepipeline"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: pipeline-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ArtifactBucket
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketVersioning
+                  - s3:GetBucketLocation
+                  - s3:PutObject
+                Resource:
+                  - !Sub
+                    - "arn:${AWS::Partition}:s3:::${Bucket}"
+                    - Bucket:
+                        Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+                  - !Sub
+                    - "arn:${AWS::Partition}:s3:::${Bucket}/*"
+                    - Bucket:
+                        Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+              - Sid: EcrAuth
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrSource
+                Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                  - ecr:DescribeRepositories
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !GetAtt EcrRepository.Arn
+              - Sid: CodeDeploy
+                Effect: Allow
+                Action:
+                  - codedeploy:CreateDeployment
+                  - codedeploy:GetDeployment
+                  - codedeploy:GetDeploymentConfig
+                  - codedeploy:GetApplication
+                  - codedeploy:GetApplicationRevision
+                  - codedeploy:RegisterApplicationRevision
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:application:${CodeDeployApplication}"
+                  - !Sub "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${CodeDeployApplication}/*"
+                  - !Sub "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentconfig:*"
+              - Sid: EcsTaskDef
+                Effect: Allow
+                Action:
+                  - ecs:RegisterTaskDefinition
+                  - ecs:DescribeTaskDefinition
+                # RegisterTaskDefinition does not support resource-level scoping.
+                Resource: "*"
+              - Sid: PassEcsRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    iam:PassedToService: ecs-tasks.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  EventBridgeInvokePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-events-to-pipeline"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: start-pipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: codepipeline:StartPipelineExecution
+                Resource: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- CodeDeploy
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ProjectName}-${Environment}"
+      ComputePlatform: ECS
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${ProjectName}-${Environment}-dg"
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      # Blue/green with traffic control: CodeDeploy stands up the green task
+      # set behind the test listener (:8080), then re-points the prod listener
+      # (:80) and finally terminates the old (blue) task set.
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        DeploymentReadyOption:
+          # Shift production traffic as soon as the green task set is healthy.
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+          WaitTimeInMinutes: 0
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          # Keep blue around briefly to allow near-instant rollback.
+          TerminationWaitTimeInMinutes: 5
+      AutoRollbackConfiguration:
+        Enabled: true
+        Events:
+          - DEPLOYMENT_FAILURE
+          - DEPLOYMENT_STOP_ON_REQUEST
+      ECSServices:
+        - ClusterName:
+            Fn::ImportValue: !Sub "${ComputeStackName}-EcsClusterName"
+          ServiceName:
+            Fn::ImportValue: !Sub "${ComputeStackName}-EcsServiceName"
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - TargetGroups:
+              - Name:
+                  Fn::ImportValue: !Sub "${ComputeStackName}-BlueTargetGroupName"
+              - Name:
+                  Fn::ImportValue: !Sub "${ComputeStackName}-GreenTargetGroupName"
+            ProdTrafficRoute:
+              ListenerArns:
+                - Fn::ImportValue: !Sub "${ComputeStackName}-ProdListenerArn"
+            TestTrafficRoute:
+              ListenerArns:
+                - Fn::ImportValue: !Sub "${ComputeStackName}-TestListenerArn"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- CodePipeline
+  # Two source actions feed the CodeDeployToECS deploy action:
+  #   1. ECR  - the freshly pushed container image (image detail artifact).
+  #   2. S3   - deploy-config.zip with appspec.yaml + taskdef.json templates
+  #             (taskdef image field = <IMAGE1_NAME> placeholder, container
+  #             name "app" to match the service's load balancer mapping).
+  # The deploy action merges them: it substitutes the ECR image URI into the
+  # taskdef, registers it, and hands the appspec to CodeDeploy for the
+  # blue/green shift.
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      RestartExecutionOnUpdate: false
+      ArtifactStore:
+        Type: S3
+        Location:
+          Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: EcrImage
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: ECR
+                Version: "1"
+              Configuration:
+                RepositoryName: !Ref EcrRepository
+                ImageTag: !Ref ImageTag
+              OutputArtifacts:
+                - Name: ImageArtifact
+              RunOrder: 1
+            - Name: DeployConfig
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: S3
+                Version: "1"
+              Configuration:
+                S3Bucket:
+                  Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+                S3ObjectKey: !Ref DeployConfigS3Key
+                # The pipeline is triggered by EventBridge on ECR pushes, not
+                # by polling this object.
+                PollForSourceChanges: false
+              OutputArtifacts:
+                - Name: ConfigArtifact
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: BlueGreenDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: "1"
+              InputArtifacts:
+                - Name: ImageArtifact
+                - Name: ConfigArtifact
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Ref CodeDeployDeploymentGroup
+                TaskDefinitionTemplateArtifact: ConfigArtifact
+                TaskDefinitionTemplatePath: taskdef.json
+                AppSpecTemplateArtifact: ConfigArtifact
+                AppSpecTemplatePath: appspec.yaml
+                Image1ArtifactName: ImageArtifact
+                Image1ContainerName: IMAGE1_NAME
+              RunOrder: 1
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- EventBridge trigger
+  # Native ECR push event (no CloudTrail dependency): a successful PutImage of
+  # the watched tag starts the pipeline.
+  EcrPushRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-ecr-push"
+      Description: Start the deploy pipeline when a new image is pushed to ECR.
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ecr
+        detail-type:
+          - ECR Image Action
+        detail:
+          action-type:
+            - PUSH
+          result:
+            - SUCCESS
+          repository-name:
+            - !Ref EcrRepository
+          image-tag:
+            - !Ref ImageTag
+      Targets:
+        - Id: codepipeline
+          Arn: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+          RoleArn: !GetAtt EventBridgeInvokePipelineRole.Arn
+
+Outputs:
+  EcrRepositoryUri:
+    Description: URI of the ECR repository (push target for GitHub Actions)
+    Value: !GetAtt EcrRepository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}-EcrRepositoryUri"
+
+  GitHubOidcProviderArn:
+    Description: ARN of the GitHub Actions OIDC provider
+    Value: !Ref GitHubOidcProvider
+    Export:
+      Name: !Sub "${AWS::StackName}-GitHubOidcProviderArn"
