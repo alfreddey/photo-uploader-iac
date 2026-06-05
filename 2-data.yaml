@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Deploy as stack name: photo-uploader-data
+# Depends on exports from: photo-uploader-network
+Description: >-
+  Photo-gallery | Stack 2 of 5 - Data. Private S3 image bucket (policy is added
+  later by the edge stack, which knows the CloudFront distribution ARN), private
+  S3 artifact bucket for CodePipeline, Multi-AZ RDS PostgreSQL in the private
+  subnets, DB subnet group, and a Secrets Manager secret holding generated DB
+  credentials.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: photo-uploader
+    Description: Project name used for resource names and tags.
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name used for resource names and tags.
+  NetworkStackName:
+    Type: String
+    Default: photo-uploader-network
+    Description: Name of the network stack whose exports are imported here.
+  DbName:
+    Type: String
+    Default: photogallery
+    Description: Initial PostgreSQL database name.
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance class.
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Allocated storage (GiB) for RDS.
+
+Resources:
+  # --------------------------------------------------------------- S3 buckets
+  # Image bucket: fully private. CloudFront (edge stack) is the ONLY reader,
+  # via an Origin Access Control bucket policy that the edge stack attaches
+  # (it cannot live here because it must be scoped to the distribution ARN).
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-images-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          # No ACLs anywhere - bucket-owner-enforced disables them entirely.
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Artifact bucket for CodePipeline. Versioning is enabled because the
+  # pipeline stack uses an S3 source action (deploy-config zip with
+  # appspec.yaml + taskdef.json), and S3 source actions require versioning.
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-artifacts-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- DB credentials
+  # Credentials are GENERATED here, never hardcoded. The RDS resource references
+  # them via dynamic references, and ECS tasks read the same secret at runtime
+  # through the Secrets Manager VPC endpoint (no NAT needed).
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-db-credentials"
+      Description: !Sub "Generated PostgreSQL credentials for ${ProjectName}-${Environment}"
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "dbadmin"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        # Characters RDS does not accept in master passwords.
+        ExcludeCharacters: '"@/\'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- RDS
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "${ProjectName}-${Environment}-db-subnets"
+      DBSubnetGroupDescription: Private subnets (eu-north-1a/b) for the photo-gallery database
+      SubnetIds: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnets"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${ProjectName}-${Environment}-db"
+      Engine: postgres
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      DBName: !Ref DbName
+      # Highly available: synchronous standby in the second AZ.
+      MultiAZ: true
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-RdsSecurityGroupId"
+      # Credentials come from the generated secret - never plaintext in the template.
+      MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
+      BackupRetentionPeriod: 7
+      CopyTagsToSnapshot: true
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Enriches the secret with host/port/dbname after the instance exists, so the
+  # app can read one secret and get a complete connection description.
+  DbSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DbSecret
+      TargetId: !Ref Database
+      TargetType: AWS::RDS::DBInstance
+
+Outputs:
+  ImageBucketName:
+    Description: Name of the private image bucket
+    Value: !Ref ImageBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ImageBucketName"
+
+  ImageBucketArn:
+    Description: ARN of the private image bucket
+    Value: !GetAtt ImageBucket.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ImageBucketArn"
+
+  ImageBucketRegionalDomainName:
+    Description: Regional domain name of the image bucket (CloudFront origin)
+    Value: !GetAtt ImageBucket.RegionalDomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-ImageBucketRegionalDomainName"
+
+  RdsEndpoint:
+    Description: RDS PostgreSQL endpoint address
+    Value: !GetAtt Database.Endpoint.Address
+    Export:
+      Name: !Sub "${AWS::StackName}-RdsEndpoint"
+
+  DbSecretArn:
+    Description: ARN of the Secrets Manager secret holding DB credentials
+    Value: !Ref DbSecret
+    Export:
+      Name: !Sub "${AWS::StackName}-DbSecretArn"
+
+  ArtifactBucketName:
+    Description: Name of the CodePipeline artifact bucket
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-ArtifactBucketName"
