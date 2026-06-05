@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Deploy as stack name: photo-uploader-edge
+# Depends on exports from: photo-uploader-data
+Description: >-
+  Photo-gallery | Stack 3 of 5 - Edge. CloudFront distribution (Price Class 200,
+  plain HTTP allowed, default CloudFront certificate) in front of the private S3
+  image bucket via Origin Access Control (OAC, not legacy OAI). Also attaches
+  the image-bucket policy here - it must live in this stack because it is
+  condition-scoped to this distribution's ARN.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: photo-uploader
+    Description: Project name used for resource names and tags.
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name used for resource names and tags.
+  DataStackName:
+    Type: String
+    Default: photo-uploader-data
+    Description: Name of the data stack whose exports are imported here.
+
+Resources:
+  # OAC signs CloudFront origin requests with SigV4 so the bucket can stay
+  # fully private (all public access blocked, no ACLs).
+  ImageOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-${Environment}-image-oac"
+        Description: OAC for the private photo-gallery image bucket
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub "${ProjectName}-${Environment} image CDN (HTTP allowed, default cert)"
+        Enabled: true
+        PriceClass: PriceClass_200
+        HttpVersion: http2
+        # Default CloudFront certificate; no ACM / custom domain / TLS config.
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: S3ImageOrigin
+            # Regional domain name avoids the global-endpoint redirect window
+            # right after bucket creation.
+            DomainName:
+              Fn::ImportValue: !Sub "${DataStackName}-ImageBucketRegionalDomainName"
+            OriginAccessControlId: !GetAtt ImageOriginAccessControl.Id
+            # With OAC the legacy OAI field must be present but empty.
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: S3ImageOrigin
+          # Plain HTTP is allowed by design (no redirect-to-https).
+          ViewerProtocolPolicy: allow-all
+          AllowedMethods:
+            - GET
+            - HEAD
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          # AWS managed cache policy "CachingOptimized" - sensible defaults for
+          # static image content (no cookies/headers/query strings in the key).
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # The bucket policy lives HERE (not in the data stack) because it must be
+  # scoped to this distribution's ARN via AWS:SourceArn - only CloudFront
+  # requests originating from THIS distribution may read objects.
+  ImageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Fn::ImportValue: !Sub "${DataStackName}-ImageBucketName"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalReadOnly
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub
+              - "${BucketArn}/*"
+              - BucketArn:
+                  Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+Outputs:
+  CloudFrontDomainName:
+    Description: Domain name of the CloudFront distribution
+    Value: !GetAtt Distribution.DomainName
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontDomainName"
+
+  CloudFrontDistributionId:
+    Description: ID of the CloudFront distribution
+    Value: !Ref Distribution
+    Export:
+      Name: !Sub "${AWS::StackName}-CloudFrontDistributionId"
