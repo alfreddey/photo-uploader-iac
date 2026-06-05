@@ -1,0 +1,445 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+# Deploy as stack name: photo-uploader-compute
+# Depends on exports from: photo-uploader-network, photo-uploader-data,
+#                          photo-uploader-edge
+Description: >-
+  Photo-gallery | Stack 4 of 5 - Compute. ECS Fargate cluster, task definition
+  (bootstrap placeholder image - the pipeline swaps in the real one), service in
+  the private subnets with the CODE_DEPLOY deployment controller, target-tracking
+  auto scaling on CPU, public ALB with blue/green target groups and prod (80) +
+  test (8080) listeners. The ECS task EXECUTION and TASK roles are defined HERE
+  (not in the pipeline stack) to avoid a circular import: compute would need
+  role ARNs from pipeline, while pipeline needs cluster/service/listener exports
+  from compute. Pipeline keeps only CI/CD roles.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: photo-uploader
+    Description: Project name used for resource names and tags.
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name used for resource names and tags.
+  NetworkStackName:
+    Type: String
+    Default: photo-uploader-network
+    Description: Name of the network stack whose exports are imported here.
+  DataStackName:
+    Type: String
+    Default: photo-uploader-data
+    Description: Name of the data stack whose exports are imported here.
+  EdgeStackName:
+    Type: String
+    Default: photo-uploader-edge
+    Description: Name of the edge stack whose exports are imported here.
+  ContainerPort:
+    Type: Number
+    Default: 80
+    Description: Port the container listens on (must match the network stack's ECS SG rule).
+  ContainerImage:
+    Type: String
+    Default: nginxdemos/hello
+    Description: >-
+      Bootstrap placeholder image so the service can be created; CodeDeploy
+      swaps in the real ECR image on the first pipeline run. NOTE: with no NAT,
+      tasks cannot reach Docker Hub - the first task launch will only succeed
+      once an image is pushed to ECR and deployed; that is expected and fine,
+      since CodeDeploy replaces the task set wholesale.
+  TaskCpu:
+    Type: String
+    Default: "256"
+    Description: Fargate task CPU units.
+  TaskMemory:
+    Type: String
+    Default: "512"
+    Description: Fargate task memory (MiB).
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Initial desired task count (auto scaling manages it afterwards).
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch Logs retention for the app log group.
+
+Resources:
+  # --------------------------------------------------------------- Logging
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-${Environment}"
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- ECS IAM roles
+  # Execution role: used by the ECS agent to pull from ECR (via the ECR VPC
+  # endpoints), write logs (via the logs endpoint), and fetch the DB secret to
+  # inject into the container (via the secretsmanager endpoint).
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-task-execution"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+      Policies:
+        - PolicyName: read-db-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Task role: what the APP can do at runtime - read/write photos in the image
+  # bucket (through the S3 gateway endpoint) and read the DB secret.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-${Environment}-task"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: app-permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ImageBucketObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub
+                  - "${BucketArn}/*"
+                  - BucketArn:
+                      Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+              - Sid: ImageBucketList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource:
+                  Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+              - Sid: ReadDbSecret
+                Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- ECS cluster + task
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-${Environment}"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-${Environment}"
+      RequiresCompatibilities:
+        - FARGATE
+      NetworkMode: awsvpc
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        # Container name "app" is part of the contract: the service's load
+        # balancer mapping below and the appspec.yaml used by CodeDeploy must
+        # both reference it.
+        - Name: app
+          Image: !Ref ContainerImage
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: DB_HOST
+              Value:
+                Fn::ImportValue: !Sub "${DataStackName}-RdsEndpoint"
+            - Name: DB_PORT
+              Value: "5432"
+            - Name: IMAGE_BUCKET
+              Value:
+                Fn::ImportValue: !Sub "${DataStackName}-ImageBucketName"
+            - Name: CLOUDFRONT_DOMAIN
+              Value:
+                Fn::ImportValue: !Sub "${EdgeStackName}-CloudFrontDomainName"
+          Secrets:
+            # Full secret JSON (username/password/host/port/dbname after the
+            # data stack's SecretTargetAttachment) injected at start time via
+            # the Secrets Manager VPC endpoint.
+            - Name: DB_CREDENTIALS
+              ValueFrom:
+                Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- Load balancer
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-alb"
+      Type: application
+      Scheme: internet-facing
+      Subnets: !Split
+        - ","
+        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnets"
+      SecurityGroups:
+        - Fn::ImportValue: !Sub "${NetworkStackName}-AlbSecurityGroupId"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Two target groups for CodeDeploy blue/green: at any moment one holds the
+  # live task set, the other receives the replacement task set. TargetType "ip"
+  # is required for Fargate (awsvpc networking).
+  BlueTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-blue"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VpcId"
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200-399
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  GreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-green"
+      VpcId:
+        Fn::ImportValue: !Sub "${NetworkStackName}-VpcId"
+      TargetType: ip
+      Protocol: HTTP
+      Port: !Ref ContainerPort
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200-399
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Blue/green listener pair (both plain HTTP, no TLS anywhere):
+  #   - Prod listener :80   -> serves real users; CodeDeploy re-points it to the
+  #     green target group when traffic shifts.
+  #   - Test listener :8080 -> lets you (or lifecycle hooks) validate the green
+  #     task set BEFORE production traffic moves. Required by CodeDeploy ECS
+  #     blue/green deployment groups.
+  # NOTE: CodeDeploy mutates these listeners' default actions during deploys -
+  # CloudFormation drift on them afterwards is expected.
+  ProdListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTargetGroup
+
+  TestListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 8080
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GreenTargetGroup
+
+  # --------------------------------------------------------------- ECS service
+  EcsService:
+    Type: AWS::ECS::Service
+    # Target groups must be attached to listeners before a service can register.
+    DependsOn:
+      - ProdListener
+      - TestListener
+    Properties:
+      ServiceName: !Sub "${ProjectName}-${Environment}-svc"
+      Cluster: !Ref EcsCluster
+      LaunchType: FARGATE
+      DesiredCount: !Ref DesiredCount
+      # CodeDeploy owns deployments (blue/green); ECS rolling updates disabled.
+      DeploymentController:
+        Type: CODE_DEPLOY
+      HealthCheckGracePeriodSeconds: 60
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # Private subnets, no public IP - all egress rides the VPC endpoints.
+          AssignPublicIp: DISABLED
+          Subnets: !Split
+            - ","
+            - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnets"
+          SecurityGroups:
+            - Fn::ImportValue: !Sub "${NetworkStackName}-EcsSecurityGroupId"
+      TaskDefinition: !Ref TaskDefinition
+      LoadBalancers:
+        # Initial registration is to BLUE; CodeDeploy alternates from there.
+        - ContainerName: app
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref BlueTargetGroup
+      PropagateTags: SERVICE
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # --------------------------------------------------------------- Auto scaling
+  ServiceScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ScalableDimension: ecs:service:DesiredCount
+      ResourceId: !Sub "service/${EcsCluster}/${EcsService.Name}"
+      MinCapacity: 1
+      MaxCapacity: 4
+      # RoleARN omitted on purpose: Application Auto Scaling uses its ECS
+      # service-linked role automatically.
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-${Environment}-cpu-target-tracking"
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ServiceScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 60
+        ScaleOutCooldown: 60
+        ScaleInCooldown: 120
+
+Outputs:
+  EcsClusterName:
+    Description: Name of the ECS cluster
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-EcsClusterName"
+
+  EcsServiceName:
+    Description: Name of the ECS service
+    Value: !GetAtt EcsService.Name
+    Export:
+      Name: !Sub "${AWS::StackName}-EcsServiceName"
+
+  AlbDnsName:
+    Description: Public DNS name of the ALB
+    Value: !GetAtt LoadBalancer.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-AlbDnsName"
+
+  BlueTargetGroupName:
+    Description: Name of the blue target group
+    Value: !GetAtt BlueTargetGroup.TargetGroupName
+    Export:
+      Name: !Sub "${AWS::StackName}-BlueTargetGroupName"
+
+  GreenTargetGroupName:
+    Description: Name of the green target group
+    Value: !GetAtt GreenTargetGroup.TargetGroupName
+    Export:
+      Name: !Sub "${AWS::StackName}-GreenTargetGroupName"
+
+  ProdListenerArn:
+    Description: ARN of the production listener (port 80)
+    Value: !Ref ProdListener
+    Export:
+      Name: !Sub "${AWS::StackName}-ProdListenerArn"
+
+  TestListenerArn:
+    Description: ARN of the test listener (port 8080)
+    Value: !Ref TestListener
+    Export:
+      Name: !Sub "${AWS::StackName}-TestListenerArn"
