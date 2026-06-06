@@ -40,13 +40,14 @@ Parameters:
     Description: Port the container listens on (must match the network stack's ECS SG rule).
   ContainerImage:
     Type: String
-    Default: nginxdemos/hello
+    Default: public.ecr.aws/nginx/nginx:latest
     Description: >-
       Bootstrap placeholder image so the service can be created; CodeDeploy
       swaps in the real ECR image on the first pipeline run. NOTE: with no NAT,
-      tasks cannot reach Docker Hub - the first task launch will only succeed
-      once an image is pushed to ECR and deployed; that is expected and fine,
-      since CodeDeploy replaces the task set wholesale.
+      tasks cannot reach ECR Public (it has no VPC endpoint) - the first task
+      launch will only succeed once an image is pushed to ECR and deployed;
+      that is expected and fine, since CodeDeploy replaces the task set
+      wholesale.
   TaskCpu:
     Type: String
     Default: "256"
