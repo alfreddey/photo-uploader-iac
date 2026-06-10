@@ -84,24 +84,24 @@ Resources:
   # --------------------------------------------------------------- GitHub OIDC
   # Federated trust with GitHub Actions: CI exchanges its OIDC token for
   # short-lived AWS credentials - no access keys stored in GitHub.
-  # GitHubOidcProvider:
-  #   Type: AWS::IAM::OIDCProvider
-  #   Properties:
-  #     Url: https://token.actions.githubusercontent.com
-  #     ClientIdList:
-  #       - sts.amazonaws.com
-  #     # AWS now pins GitHub's root CA and ignores thumbprints, but the property
-  #     # is still required; these are the published GitHub OIDC thumbprints.
-  #     ThumbprintList:
-  #       - 6938fd4d98bab03faadb97b34396831e3780aea1
-  #       - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
-  #     Tags:
-  #       - Key: Project
-  #         Value: !Ref ProjectName
-  #       - Key: Environment
-  #         Value: !Ref Environment
-  #       - Key: ManagedBy
-  #         Value: CloudFormation
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS now pins GitHub's root CA and ignores thumbprints, but the property
+      # is still required; these are the published GitHub OIDC thumbprints.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: ManagedBy
+          Value: CloudFormation
 
   GitHubActionsDeployRole:
     Type: AWS::IAM::Role
