@@ -1,0 +1,13 @@
+# AppSpec for the CodeDeployToECS pipeline action (5-pipeline.yaml).
+# <TASK_DEFINITION> is substituted by CodePipeline with the task definition it
+# registers from taskdef.json; container name/port must match the service's
+# load balancer mapping in 4-compute.yaml.
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: <TASK_DEFINITION>
+        LoadBalancerInfo:
+          ContainerName: "app"
+          ContainerPort: 80

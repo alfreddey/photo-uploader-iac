@@ -1,0 +1,56 @@
+{
+  "family": "photo-uploader-dev",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::183631301567:role/photo-uploader-dev-task-execution",
+  "taskRoleArn": "arn:aws:iam::183631301567:role/photo-uploader-dev-task",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "<IMAGE1_NAME>",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 80,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "CLOUDFRONT_DOMAIN",
+          "value": "d2ga4oxb0es1xs.cloudfront.net"
+        },
+        {
+          "name": "DB_PORT",
+          "value": "5432"
+        },
+        {
+          "name": "DB_HOST",
+          "value": "photo-uploader-dev-db.csngcqw4qewt.us-east-1.rds.amazonaws.com"
+        },
+        {
+          "name": "IMAGE_BUCKET",
+          "value": "photo-uploader-dev-images-183631301567"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "DB_CREDENTIALS",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:183631301567:secret:photo-uploader-dev-db-credentials-0zweS9"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/photo-uploader-dev",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app"
+        }
+      }
+    }
+  ]
+}
