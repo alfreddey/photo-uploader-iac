@@ -159,8 +159,6 @@ Resources:
       MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
       BackupRetentionPeriod: 7
       CopyTagsToSnapshot: true
-      AutoMinorVersionUpgrade: true
-      DeletionProtection: false
       Tags:
         - Key: Project
           Value: !Ref ProjectName
