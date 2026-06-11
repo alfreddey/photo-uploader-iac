@@ -1,8 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# Deploy as stack name: photo-uploader-compute
-# Depends on exports from: photo-uploader-network, photo-uploader-data,
-#                          photo-uploader-edge
 Description: >-
   Photo-gallery | Stack 4 of 5 - Compute. ECS Fargate cluster, task definition
   (bootstrap placeholder image - the pipeline swaps in the real one), service in
@@ -66,7 +63,6 @@ Parameters:
     Description: CloudWatch Logs retention for the app log group.
 
 Resources:
-  # --------------------------------------------------------------- Logging
   AppLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -80,10 +76,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- ECS IAM roles
-  # Execution role: used by the ECS agent to pull from ECR (via the ECR VPC
-  # endpoints), write logs (via the logs endpoint), and fetch the DB secret to
-  # inject into the container (via the secretsmanager endpoint).
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -114,8 +106,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Task role: what the APP can do at runtime - read/write photos in the image
-  # bucket (through the S3 gateway endpoint) and read the DB secret.
   TaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -160,7 +150,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- ECS cluster + task
   EcsCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -188,9 +177,8 @@ Resources:
       ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       TaskRoleArn: !GetAtt TaskRole.Arn
       ContainerDefinitions:
-        # Container name "app" is part of the contract: the service's load
-        # balancer mapping below and the appspec.yaml used by CodeDeploy must
-        # both reference it.
+        # Name "app" is a contract: the service's load balancer mapping and the
+        # CodeDeploy appspec.yaml must both reference it.
         - Name: app
           Image: !Ref ContainerImage
           Essential: true
@@ -210,9 +198,6 @@ Resources:
               Value:
                 Fn::ImportValue: !Sub "${EdgeStackName}-CloudFrontDomainName"
           Secrets:
-            # Full secret JSON (username/password/host/port/dbname after the
-            # data stack's SecretTargetAttachment) injected at start time via
-            # the Secrets Manager VPC endpoint.
             - Name: DB_CREDENTIALS
               ValueFrom:
                 Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
@@ -230,7 +215,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- Load balancer
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -250,9 +234,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Two target groups for CodeDeploy blue/green: at any moment one holds the
-  # live task set, the other receives the replacement task set. TargetType "ip"
-  # is required for Fargate (awsvpc networking).
   BlueTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -309,13 +290,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Blue/green listener pair (both plain HTTP, no TLS anywhere):
-  #   - Prod listener :80   -> serves real users; CodeDeploy re-points it to the
-  #     green target group when traffic shifts.
-  #   - Test listener :8080 -> lets you (or lifecycle hooks) validate the green
-  #     task set BEFORE production traffic moves. Required by CodeDeploy ECS
-  #     blue/green deployment groups.
-  # NOTE: CodeDeploy mutates these listeners' default actions during deploys -
+  # CodeDeploy mutates both listeners' default actions during deploys -
   # CloudFormation drift on them afterwards is expected.
   ProdListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -337,7 +312,6 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref GreenTargetGroup
 
-  # --------------------------------------------------------------- ECS service
   EcsService:
     Type: AWS::ECS::Service
     # Target groups must be attached to listeners before a service can register.
@@ -349,13 +323,11 @@ Resources:
       Cluster: !Ref EcsCluster
       LaunchType: FARGATE
       DesiredCount: !Ref DesiredCount
-      # CodeDeploy owns deployments (blue/green); ECS rolling updates disabled.
       DeploymentController:
         Type: CODE_DEPLOY
       HealthCheckGracePeriodSeconds: 60
       NetworkConfiguration:
         AwsvpcConfiguration:
-          # Private subnets, no public IP - all egress rides the VPC endpoints.
           AssignPublicIp: DISABLED
           Subnets: !Split
             - ","
@@ -364,7 +336,6 @@ Resources:
             - Fn::ImportValue: !Sub "${NetworkStackName}-EcsSecurityGroupId"
       TaskDefinition: !Ref TaskDefinition
       LoadBalancers:
-        # Initial registration is to BLUE; CodeDeploy alternates from there.
         - ContainerName: app
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref BlueTargetGroup
@@ -377,7 +348,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- Auto scaling
   ServiceScalableTarget:
     Type: AWS::ApplicationAutoScaling::ScalableTarget
     Properties:

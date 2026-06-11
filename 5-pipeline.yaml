@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# Deploy as stack name: photo-uploader-pipeline
-# Depends on exports from: photo-uploader-data, photo-uploader-compute
 Description: >-
   Photo-gallery | Stack 5 of 5 - Pipeline. ECR repository, GitHub OIDC provider
   and deploy role (no long-lived credentials), CodeDeploy ECS blue/green
@@ -49,7 +47,6 @@ Parameters:
       image; upload the zip once before the first pipeline run.
 
 Resources:
-  # --------------------------------------------------------------- ECR
   EcrRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -81,9 +78,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- GitHub OIDC
-  # Federated trust with GitHub Actions: CI exchanges its OIDC token for
-  # short-lived AWS credentials - no access keys stored in GitHub.
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
@@ -119,7 +113,6 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                # Scoped to the APP repo only (any branch/ref).
                 token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrg}/${GitHubRepo}:*"
       Policies:
         - PolicyName: ecr-push
@@ -150,7 +143,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- CI/CD roles
   CodeDeployServiceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -163,7 +155,6 @@ Resources:
               Service: codedeploy.amazonaws.com
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        # AWS managed policy purpose-built for ECS blue/green deployments.
         - !Sub "arn:${AWS::Partition}:iam::aws:policy/AWSCodeDeployRoleForECS"
       Tags:
         - Key: Project
@@ -281,7 +272,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- CodeDeploy
   CodeDeployApplication:
     Type: AWS::CodeDeploy::Application
     Properties:
@@ -302,20 +292,15 @@ Resources:
       DeploymentGroupName: !Sub "${ProjectName}-${Environment}-dg"
       ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
       DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
-      # Blue/green with traffic control: CodeDeploy stands up the green task
-      # set behind the test listener (:8080), then re-points the prod listener
-      # (:80) and finally terminates the old (blue) task set.
       DeploymentStyle:
         DeploymentType: BLUE_GREEN
         DeploymentOption: WITH_TRAFFIC_CONTROL
       BlueGreenDeploymentConfiguration:
         DeploymentReadyOption:
-          # Shift production traffic as soon as the green task set is healthy.
           ActionOnTimeout: CONTINUE_DEPLOYMENT
           WaitTimeInMinutes: 0
         TerminateBlueInstancesOnDeploymentSuccess:
           Action: TERMINATE
-          # Keep blue around briefly to allow near-instant rollback.
           TerminationWaitTimeInMinutes: 5
       AutoRollbackConfiguration:
         Enabled: true
@@ -348,15 +333,9 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- CodePipeline
-  # Two source actions feed the CodeDeployToECS deploy action:
-  #   1. ECR  - the freshly pushed container image (image detail artifact).
-  #   2. S3   - deploy-config.zip with appspec.yaml + taskdef.json templates
-  #             (taskdef image field = <IMAGE1_NAME> placeholder, container
-  #             name "app" to match the service's load balancer mapping).
-  # The deploy action merges them: it substitutes the ECR image URI into the
-  # taskdef, registers it, and hands the appspec to CodeDeploy for the
-  # blue/green shift.
+  # The CodeDeployToECS action merges the two sources: it substitutes the ECR
+  # image URI for the <IMAGE1_NAME> placeholder in taskdef.json, registers it,
+  # and hands appspec.yaml to CodeDeploy for the blue/green shift.
   Pipeline:
     Type: AWS::CodePipeline::Pipeline
     Properties:
@@ -392,8 +371,7 @@ Resources:
                 S3Bucket:
                   Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
                 S3ObjectKey: !Ref DeployConfigS3Key
-                # The pipeline is triggered by EventBridge on ECR pushes, not
-                # by polling this object.
+                # Triggered by EventBridge on ECR pushes; this object is not polled.
                 PollForSourceChanges: false
               OutputArtifacts:
                 - Name: ConfigArtifact
@@ -427,9 +405,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- EventBridge trigger
-  # Native ECR push event (no CloudTrail dependency): a successful PutImage of
-  # the watched tag starts the pipeline.
   EcrPushRule:
     Type: AWS::Events::Rule
     Properties:

@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# Deploy as stack name: photo-uploader-network
-# Consumers (data/compute stacks) import exports using this stack name as prefix.
 Description: >-
   Photo-gallery | Stack 1 of 5 - Network. VPC across eu-north-1a/eu-north-1b with
   2 public and 2 private subnets, internet gateway, route tables, least-privilege
@@ -25,14 +23,11 @@ Parameters:
     Description: Port the ECS containers listen on (used for the ALB -> ECS ingress rule).
 
 Resources:
-  # --------------------------------------------------------------- VPC core
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
-      # DNS support + hostnames are REQUIRED for PrivateDnsEnabled interface
-      # endpoints below: they let e.g. ecr.eu-north-1.amazonaws.com resolve to
-      # the endpoint ENIs' private IPs inside the VPC.
+      # Both REQUIRED for the PrivateDnsEnabled interface endpoints below.
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -64,8 +59,6 @@ Resources:
       VpcId: !Ref Vpc
       InternetGatewayId: !Ref InternetGateway
 
-  # --------------------------------------------------------------- Subnets
-  # Exactly 2 AZs: eu-north-1a / eu-north-1b (template resolves "${Region}a/b").
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
@@ -134,7 +127,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- Routing
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -169,10 +161,8 @@ Resources:
       SubnetId: !Ref PublicSubnetB
       RouteTableId: !Ref PublicRouteTable
 
-  # Private route table intentionally has NO 0.0.0.0/0 route (no NAT, no IGW).
-  # The only non-local "route" added is the S3 Gateway endpoint's managed prefix
-  # list. All other AWS service access goes through interface endpoint ENIs,
-  # which need no route entries at all.
+  # Intentionally has NO 0.0.0.0/0 route (no NAT, no IGW); the S3 gateway
+  # endpoint adds the only non-local route.
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -199,9 +189,6 @@ Resources:
       SubnetId: !Ref PrivateSubnetB
       RouteTableId: !Ref PrivateRouteTable
 
-  # --------------------------------------------------------------- Security groups
-  # Least privilege: SGs reference each other; the only internet-wide rules are
-  # on the public ALB.
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -213,8 +200,6 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: Production listener (HTTP)
-        # Port 8080 backs the CodeDeploy blue/green TEST listener, so the green
-        # task set can be validated before production traffic is shifted.
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
@@ -293,14 +278,9 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- VPC endpoints
-  # All of these are REQUIRED because there is no NAT gateway:
-  #   - s3 (Gateway):        ECR stores image layers in S3, and the app reads/
-  #                          writes photos. Gateway endpoints are free.
-  #   - ecr.api / ecr.dkr:   Fargate image pull (auth + registry/manifest).
-  #   - logs:                awslogs driver -> CloudWatch Logs delivery.
-  #   - secretsmanager:      injecting DB credentials into the task.
-  #   - sts:                 task role credential vending (IAM roles for tasks).
+  # Every endpoint below is REQUIRED because there is no NAT gateway: image pull
+  # (ecr.api/ecr.dkr/s3), log delivery, secret injection, and task-role
+  # credential vending must all terminate inside the VPC.
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:

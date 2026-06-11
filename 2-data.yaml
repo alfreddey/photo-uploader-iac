@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# Deploy as stack name: photo-uploader-data
-# Depends on exports from: photo-uploader-network
 Description: >-
   Photo-gallery | Stack 2 of 5 - Data. Private S3 image bucket (policy is added
   later by the edge stack, which knows the CloudFront distribution ARN), private
@@ -36,10 +34,6 @@ Parameters:
     Description: Allocated storage (GiB) for RDS.
 
 Resources:
-  # --------------------------------------------------------------- S3 buckets
-  # Image bucket: fully private. CloudFront (edge stack) is the ONLY reader,
-  # via an Origin Access Control bucket policy that the edge stack attaches
-  # (it cannot live here because it must be scoped to the distribution ARN).
   ImageBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -51,7 +45,6 @@ Resources:
         RestrictPublicBuckets: true
       OwnershipControls:
         Rules:
-          # No ACLs anywhere - bucket-owner-enforced disables them entirely.
           - ObjectOwnership: BucketOwnerEnforced
       BucketEncryption:
         ServerSideEncryptionConfiguration:
@@ -65,9 +58,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Artifact bucket for CodePipeline. Versioning is enabled because the
-  # pipeline stack uses an S3 source action (deploy-config zip with
-  # appspec.yaml + taskdef.json), and S3 source actions require versioning.
+  # Versioning is REQUIRED by the pipeline stack's S3 source action.
   ArtifactBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -97,10 +88,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- DB credentials
-  # Credentials are GENERATED here, never hardcoded. The RDS resource references
-  # them via dynamic references, and ECS tasks read the same secret at runtime
-  # through the Secrets Manager VPC endpoint (no NAT needed).
   DbSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -120,7 +107,6 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # --------------------------------------------------------------- RDS
   DbSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -147,14 +133,12 @@ Resources:
       DBInstanceClass: !Ref DbInstanceClass
       AllocatedStorage: !Ref DbAllocatedStorage
       DBName: !Ref DbName
-      # Highly available: synchronous standby in the second AZ.
       MultiAZ: true
       StorageEncrypted: true
       PubliclyAccessible: false
       DBSubnetGroupName: !Ref DbSubnetGroup
       VPCSecurityGroups:
         - Fn::ImportValue: !Sub "${NetworkStackName}-RdsSecurityGroupId"
-      # Credentials come from the generated secret - never plaintext in the template.
       MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
       MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
       BackupRetentionPeriod: 7
@@ -167,8 +151,7 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # Enriches the secret with host/port/dbname after the instance exists, so the
-  # app can read one secret and get a complete connection description.
+  # Enriches the secret with host/port/dbname once the instance exists.
   DbSecretAttachment:
     Type: AWS::SecretsManager::SecretTargetAttachment
     Properties:

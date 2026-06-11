@@ -1,7 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-# Deploy as stack name: photo-uploader-edge
-# Depends on exports from: photo-uploader-data
 Description: >-
   Photo-gallery | Stack 3 of 5 - Edge. CloudFront distribution (Price Class 200,
   plain HTTP allowed, default CloudFront certificate) in front of the private S3
@@ -24,8 +22,6 @@ Parameters:
     Description: Name of the data stack whose exports are imported here.
 
 Resources:
-  # OAC signs CloudFront origin requests with SigV4 so the bucket can stay
-  # fully private (all public access blocked, no ACLs).
   ImageOriginAccessControl:
     Type: AWS::CloudFront::OriginAccessControl
     Properties:
@@ -44,7 +40,6 @@ Resources:
         Enabled: true
         PriceClass: PriceClass_200
         HttpVersion: http2
-        # Default CloudFront certificate; no ACM / custom domain / TLS config.
         ViewerCertificate:
           CloudFrontDefaultCertificate: true
         Origins:
@@ -59,7 +54,6 @@ Resources:
               OriginAccessIdentity: ""
         DefaultCacheBehavior:
           TargetOriginId: S3ImageOrigin
-          # Plain HTTP is allowed by design (no redirect-to-https).
           ViewerProtocolPolicy: allow-all
           AllowedMethods:
             - GET
@@ -68,8 +62,7 @@ Resources:
             - GET
             - HEAD
           Compress: true
-          # AWS managed cache policy "CachingOptimized" - sensible defaults for
-          # static image content (no cookies/headers/query strings in the key).
+          # AWS managed cache policy "CachingOptimized".
           CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
       Tags:
         - Key: Project
@@ -79,9 +72,8 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  # The bucket policy lives HERE (not in the data stack) because it must be
-  # scoped to this distribution's ARN via AWS:SourceArn - only CloudFront
-  # requests originating from THIS distribution may read objects.
+  # Lives here (not in the data stack) because it must be scoped to this
+  # distribution's ARN.
   ImageBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
