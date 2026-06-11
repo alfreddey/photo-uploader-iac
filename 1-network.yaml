@@ -1,12 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 1 of 5 - Network. VPC across eu-north-1a/eu-north-1b with
-  2 public and 2 private subnets, internet gateway, route tables, least-privilege
-  security groups, and VPC endpoints. Deliberately contains NO NAT gateways:
-  private subnets have zero internet route, so every AWS API call made by ECS
-  tasks (image pull, log delivery, secret retrieval, STS) terminates at a VPC
-  endpoint instead of traversing the internet.
+  Photo-gallery | Stack 1 of 5 - Network. VPC, public/private subnets, security
+  groups, and VPC endpoints (no NAT; private subnets reach AWS APIs via
+  endpoints only).
 
 Parameters:
   ProjectName:

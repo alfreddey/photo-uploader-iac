@@ -1,12 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 5 of 5 - Pipeline. ECR repository, GitHub OIDC provider
-  and deploy role (no long-lived credentials), CodeDeploy ECS blue/green
-  application + deployment group, CodePipeline (ECR image source + S3
-  deploy-config source -> CodeDeployToECS), and the EventBridge rule that starts
-  the pipeline on every image push. ECS task execution/task roles live in the
-  compute stack to avoid a circular import; only CI/CD roles are here.
+  Photo-gallery | Stack 5 of 5 - Pipeline. ECR repository, GitHub OIDC deploy
+  role, CodeDeploy ECS blue/green, and CodePipeline triggered by image pushes
+  via EventBridge.
 
 Parameters:
   ProjectName:
@@ -41,10 +38,8 @@ Parameters:
     Type: String
     Default: deploy/deploy-config.zip
     Description: >-
-      Key in the artifact bucket of a zip containing appspec.yaml and
-      taskdef.json (taskdef's image field must be the placeholder
-      <IMAGE1_NAME>). The CodeDeployToECS action needs these alongside the ECR
-      image; upload the zip once before the first pipeline run.
+      Artifact-bucket key of the deploy-config zip (appspec.yaml + taskdef.json);
+      upload once before the first pipeline run.
 
 Resources:
   EcrRepository:

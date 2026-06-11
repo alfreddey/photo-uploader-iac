@@ -1,14 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 4 of 5 - Compute. ECS Fargate cluster, task definition
-  (bootstrap placeholder image - the pipeline swaps in the real one), service in
-  the private subnets with the CODE_DEPLOY deployment controller, target-tracking
-  auto scaling on CPU, public ALB with blue/green target groups and prod (80) +
-  test (8080) listeners. The ECS task EXECUTION and TASK roles are defined HERE
-  (not in the pipeline stack) to avoid a circular import: compute would need
-  role ARNs from pipeline, while pipeline needs cluster/service/listener exports
-  from compute. Pipeline keeps only CI/CD roles.
+  Photo-gallery | Stack 4 of 5 - Compute. ECS Fargate service behind a public
+  ALB with blue/green target groups and CPU auto scaling; task roles live here
+  to avoid a circular import with the pipeline stack.
 
 Parameters:
   ProjectName:
@@ -39,12 +34,8 @@ Parameters:
     Type: String
     Default: 183631301567.dkr.ecr.us-east-1.amazonaws.com/bootstrap-nginx:latest
     Description: >-
-      Bootstrap placeholder image so the service can be created; CodeDeploy
-      swaps in the real ECR image on the first pipeline run. NOTE: with no NAT,
-      tasks cannot reach ECR Public (it has no VPC endpoint) - the first task
-      launch will only succeed once an image is pushed to ECR and deployed;
-      that is expected and fine, since CodeDeploy replaces the task set
-      wholesale.
+      Bootstrap placeholder image; CodeDeploy swaps in the real ECR image on
+      the first pipeline run.
   TaskCpu:
     Type: String
     Default: "256"

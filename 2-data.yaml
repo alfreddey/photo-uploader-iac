@@ -1,11 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 2 of 5 - Data. Private S3 image bucket (policy is added
-  later by the edge stack, which knows the CloudFront distribution ARN), private
-  S3 artifact bucket for CodePipeline, Multi-AZ RDS PostgreSQL in the private
-  subnets, DB subnet group, and a Secrets Manager secret holding generated DB
-  credentials.
+  Photo-gallery | Stack 2 of 5 - Data. Private S3 image and artifact buckets,
+  Multi-AZ RDS PostgreSQL, and a Secrets Manager DB secret.
 
 Parameters:
   ProjectName:

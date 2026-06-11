@@ -1,11 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 3 of 5 - Edge. CloudFront distribution (Price Class 200,
-  plain HTTP allowed, default CloudFront certificate) in front of the private S3
-  image bucket via Origin Access Control (OAC, not legacy OAI). Also attaches
-  the image-bucket policy here - it must live in this stack because it is
-  condition-scoped to this distribution's ARN.
+  Photo-gallery | Stack 3 of 5 - Edge. CloudFront distribution with OAC in
+  front of the private image bucket, plus the bucket policy scoped to this
+  distribution.
 
 Parameters:
   ProjectName:
