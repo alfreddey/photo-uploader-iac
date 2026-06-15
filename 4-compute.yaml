@@ -32,7 +32,7 @@ Parameters:
     Description: Port the container listens on (must match the network stack's ECS SG rule).
   ContainerImage:
     Type: String
-    Default: 183631301567.dkr.ecr.us-east-1.amazonaws.com/bootstrap-nginx:latest
+    Default: 183631301567.dkr.ecr.eu-north-1.amazonaws.com/bootstrap-nginx:latest
     Description: >-
       Bootstrap placeholder image; CodeDeploy swaps in the real ECR image on
       the first pipeline run.
