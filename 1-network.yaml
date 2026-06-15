@@ -24,7 +24,6 @@ Resources:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
-      # Both REQUIRED for the PrivateDnsEnabled interface endpoints below.
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -263,8 +262,13 @@ Resources:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          SourceSecurityGroupId: !Ref EcsSecurityGroup
-          Description: HTTPS to AWS service endpoints from ECS tasks
+          CidrIp: 10.0.10.0/24
+          Description: HTTPS from Private Subnet A
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.11.0/24
+          Description: HTTPS from Private Subnet B
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-${Environment}-vpce-sg"

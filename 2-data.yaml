@@ -76,7 +76,7 @@ Resources:
           - Id: ExpireOldArtifacts
             Status: Enabled
             NoncurrentVersionExpiration:
-              NoncurrentDays: 30
+              NoncurrentDays: 7
       Tags:
         - Key: Project
           Value: !Ref ProjectName

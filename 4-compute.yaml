@@ -50,7 +50,7 @@ Parameters:
     Description: Initial desired task count (auto scaling manages it afterwards).
   LogRetentionDays:
     Type: Number
-    Default: 30
+    Default: 7
     Description: CloudWatch Logs retention for the app log group.
 
 Resources:
