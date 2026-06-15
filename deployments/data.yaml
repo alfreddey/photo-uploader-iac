@@ -1,10 +1,3 @@
-# Git sync deployment file for stack: photo-uploader-data
 template-file-path: 2-data.yaml
-parameters:
-  ProjectName: photo-uploader
-  Environment: dev
-  NetworkStackName: photo-uploader-network
-tags:
-  Project: photo-uploader
-  Environment: dev
-  ManagedBy: CloudFormation
+parameters: {}
+tags: {}
