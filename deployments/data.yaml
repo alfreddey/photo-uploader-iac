@@ -1,10 +1,9 @@
-# Git sync deployment file for stack: photo-uploader-data
 template-file-path: 2-data.yaml
 parameters:
+  DbAllocatedStorage: '20'
+  NetworkStackName: photo-uploader-network
   ProjectName: photo-uploader
   Environment: dev
-  NetworkStackName: photo-uploader-network
-tags:
-  Project: photo-uploader
-  Environment: dev
-  ManagedBy: CloudFormation
+  DbName: photogallery
+  DbInstanceClass: db.t3.micro
+tags: {}
