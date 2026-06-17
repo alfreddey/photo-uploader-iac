@@ -22,7 +22,7 @@
       "environment": [
         {
           "name": "CLOUDFRONT_DOMAIN",
-          "value": "d2ga4oxb0es1xs.cloudfront.net"
+          "value": "da5hmxj9c33ha.cloudfront.net"
         },
         {
           "name": "DB_PORT",
@@ -30,7 +30,7 @@
         },
         {
           "name": "DB_HOST",
-          "value": "photo-uploader-dev-db.csngcqw4qewt.us-east-1.rds.amazonaws.com"
+          "value": "photo-uploader-dev-db.cnq0q0miqc7y.eu-north-1.rds.amazonaws.com"
         },
         {
           "name": "IMAGE_BUCKET",
@@ -40,14 +40,14 @@
       "secrets": [
         {
           "name": "DB_CREDENTIALS",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:183631301567:secret:photo-uploader-dev-db-credentials-0zweS9"
+          "valueFrom": "arn:aws:secretsmanager:eu-north-1:183631301567:secret:photo-uploader-dev-db-credentials-uWfCDy"
         }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/photo-uploader-dev",
-          "awslogs-region": "us-east-1",
+          "awslogs-region": "eu-north-1",
           "awslogs-stream-prefix": "app"
         }
       }
