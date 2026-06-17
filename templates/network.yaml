@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 1 of 5 - Network. VPC, public/private subnets, security
+  Photo-gallery | Nested child - Network. VPC, public/private subnets, security
   groups, and VPC endpoints (no NAT; private subnets reach AWS APIs via
   endpoints only).
 
@@ -410,39 +410,29 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
+# Outputs are read by the root template via Fn::GetAtt <NestedStack>.Outputs.*;
+# no cross-account/cross-stack Export is needed inside a nested stack.
 Outputs:
   VpcId:
     Description: VPC ID
     Value: !Ref Vpc
-    Export:
-      Name: !Sub "${AWS::StackName}-VpcId"
 
   PublicSubnets:
     Description: Comma-joined public subnet IDs (ALB)
     Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
-    Export:
-      Name: !Sub "${AWS::StackName}-PublicSubnets"
 
   PrivateSubnets:
     Description: Comma-joined private subnet IDs (ECS tasks, RDS)
     Value: !Join [",", [!Ref PrivateSubnetA, !Ref PrivateSubnetB]]
-    Export:
-      Name: !Sub "${AWS::StackName}-PrivateSubnets"
 
   AlbSecurityGroupId:
     Description: Security group for the public ALB
     Value: !Ref AlbSecurityGroup
-    Export:
-      Name: !Sub "${AWS::StackName}-AlbSecurityGroupId"
 
   EcsSecurityGroupId:
     Description: Security group for ECS tasks
     Value: !Ref EcsSecurityGroup
-    Export:
-      Name: !Sub "${AWS::StackName}-EcsSecurityGroupId"
 
   RdsSecurityGroupId:
     Description: Security group for RDS PostgreSQL
     Value: !Ref RdsSecurityGroup
-    Export:
-      Name: !Sub "${AWS::StackName}-RdsSecurityGroupId"

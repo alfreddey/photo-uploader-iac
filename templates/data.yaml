@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 2 of 5 - Data. Private S3 image and artifact buckets,
+  Photo-gallery | Nested child - Data. Private S3 image and artifact buckets,
   Multi-AZ RDS PostgreSQL, and a Secrets Manager DB secret.
 
 Parameters:
@@ -13,10 +13,12 @@ Parameters:
     Type: String
     Default: dev
     Description: Environment name used for resource names and tags.
-  NetworkStackName:
-    Type: String
-    Default: photo-uploader-network
-    Description: Name of the network stack whose exports are imported here.
+  PrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs (from the network stack) for the DB subnet group.
+  RdsSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group (from the network stack) for the RDS instance.
   DbName:
     Type: String
     Default: photogallery
@@ -109,9 +111,7 @@ Resources:
     Properties:
       DBSubnetGroupName: !Sub "${ProjectName}-${Environment}-db-subnets"
       DBSubnetGroupDescription: Private subnets (eu-north-1a/b) for the photo-gallery database
-      SubnetIds: !Split
-        - ","
-        - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnets"
+      SubnetIds: !Ref PrivateSubnets
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -135,7 +135,7 @@ Resources:
       PubliclyAccessible: false
       DBSubnetGroupName: !Ref DbSubnetGroup
       VPCSecurityGroups:
-        - Fn::ImportValue: !Sub "${NetworkStackName}-RdsSecurityGroupId"
+        - !Ref RdsSecurityGroupId
       MasterUsername: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:username}}"
       MasterUserPassword: !Sub "{{resolve:secretsmanager:${DbSecret}:SecretString:password}}"
       BackupRetentionPeriod: 7
@@ -156,39 +156,28 @@ Resources:
       TargetId: !Ref Database
       TargetType: AWS::RDS::DBInstance
 
+# Outputs are read by the root template via Fn::GetAtt <NestedStack>.Outputs.*.
 Outputs:
   ImageBucketName:
     Description: Name of the private image bucket
     Value: !Ref ImageBucket
-    Export:
-      Name: !Sub "${AWS::StackName}-ImageBucketName"
 
   ImageBucketArn:
     Description: ARN of the private image bucket
     Value: !GetAtt ImageBucket.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-ImageBucketArn"
 
   ImageBucketRegionalDomainName:
     Description: Regional domain name of the image bucket (CloudFront origin)
     Value: !GetAtt ImageBucket.RegionalDomainName
-    Export:
-      Name: !Sub "${AWS::StackName}-ImageBucketRegionalDomainName"
 
   RdsEndpoint:
     Description: RDS PostgreSQL endpoint address
     Value: !GetAtt Database.Endpoint.Address
-    Export:
-      Name: !Sub "${AWS::StackName}-RdsEndpoint"
 
   DbSecretArn:
     Description: ARN of the Secrets Manager secret holding DB credentials
     Value: !Ref DbSecret
-    Export:
-      Name: !Sub "${AWS::StackName}-DbSecretArn"
 
   ArtifactBucketName:
     Description: Name of the CodePipeline artifact bucket
     Value: !Ref ArtifactBucket
-    Export:
-      Name: !Sub "${AWS::StackName}-ArtifactBucketName"

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 5 of 5 - Pipeline. ECR repository, GitHub OIDC deploy
+  Photo-gallery | Nested child - Pipeline. ECR repository, GitHub OIDC deploy
   role, CodeDeploy ECS blue/green, and CodePipeline triggered by image pushes
   via EventBridge.
 
@@ -14,14 +14,27 @@ Parameters:
     Type: String
     Default: dev
     Description: Environment name used for resource names and tags.
-  DataStackName:
+  ArtifactBucketName:
     Type: String
-    Default: photo-uploader-data
-    Description: Name of the data stack whose exports are imported here.
-  ComputeStackName:
+    Description: Name of the artifact bucket (from the data stack).
+  EcsClusterName:
     Type: String
-    Default: photo-uploader-compute
-    Description: Name of the compute stack whose exports are imported here.
+    Description: Name of the ECS cluster (from the compute stack).
+  EcsServiceName:
+    Type: String
+    Description: Name of the ECS service (from the compute stack).
+  BlueTargetGroupName:
+    Type: String
+    Description: Name of the blue target group (from the compute stack).
+  GreenTargetGroupName:
+    Type: String
+    Description: Name of the green target group (from the compute stack).
+  ProdListenerArn:
+    Type: String
+    Description: ARN of the production listener (from the compute stack).
+  TestListenerArn:
+    Type: String
+    Description: ARN of the test listener (from the compute stack).
   GitHubOrg:
     Type: String
     Default: alfreddey
@@ -184,14 +197,8 @@ Resources:
                   - s3:GetBucketLocation
                   - s3:PutObject
                 Resource:
-                  - !Sub
-                    - "arn:${AWS::Partition}:s3:::${Bucket}"
-                    - Bucket:
-                        Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
-                  - !Sub
-                    - "arn:${AWS::Partition}:s3:::${Bucket}/*"
-                    - Bucket:
-                        Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}"
+                  - !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*"
               - Sid: EcrAuth
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken
@@ -303,23 +310,19 @@ Resources:
           - DEPLOYMENT_FAILURE
           - DEPLOYMENT_STOP_ON_REQUEST
       ECSServices:
-        - ClusterName:
-            Fn::ImportValue: !Sub "${ComputeStackName}-EcsClusterName"
-          ServiceName:
-            Fn::ImportValue: !Sub "${ComputeStackName}-EcsServiceName"
+        - ClusterName: !Ref EcsClusterName
+          ServiceName: !Ref EcsServiceName
       LoadBalancerInfo:
         TargetGroupPairInfoList:
           - TargetGroups:
-              - Name:
-                  Fn::ImportValue: !Sub "${ComputeStackName}-BlueTargetGroupName"
-              - Name:
-                  Fn::ImportValue: !Sub "${ComputeStackName}-GreenTargetGroupName"
+              - Name: !Ref BlueTargetGroupName
+              - Name: !Ref GreenTargetGroupName
             ProdTrafficRoute:
               ListenerArns:
-                - Fn::ImportValue: !Sub "${ComputeStackName}-ProdListenerArn"
+                - !Ref ProdListenerArn
             TestTrafficRoute:
               ListenerArns:
-                - Fn::ImportValue: !Sub "${ComputeStackName}-TestListenerArn"
+                - !Ref TestListenerArn
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -339,8 +342,7 @@ Resources:
       RestartExecutionOnUpdate: false
       ArtifactStore:
         Type: S3
-        Location:
-          Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+        Location: !Ref ArtifactBucketName
       Stages:
         - Name: Source
           Actions:
@@ -363,8 +365,7 @@ Resources:
                 Provider: S3
                 Version: "1"
               Configuration:
-                S3Bucket:
-                  Fn::ImportValue: !Sub "${DataStackName}-ArtifactBucketName"
+                S3Bucket: !Ref ArtifactBucketName
                 S3ObjectKey: !Ref DeployConfigS3Key
                 # Triggered by EventBridge on ECR pushes; this object is not polled.
                 PollForSourceChanges: false
@@ -425,15 +426,12 @@ Resources:
           Arn: !Sub "arn:${AWS::Partition}:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
           RoleArn: !GetAtt EventBridgeInvokePipelineRole.Arn
 
+# Outputs are read by the root template via Fn::GetAtt <NestedStack>.Outputs.*.
 Outputs:
   EcrRepositoryUri:
     Description: URI of the ECR repository (push target for GitHub Actions)
     Value: !GetAtt EcrRepository.RepositoryUri
-    Export:
-      Name: !Sub "${AWS::StackName}-EcrRepositoryUri"
 
   GitHubOidcProviderArn:
     Description: ARN of the GitHub Actions OIDC provider
     Value: !Ref GitHubOidcProvider
-    Export:
-      Name: !Sub "${AWS::StackName}-GitHubOidcProviderArn"

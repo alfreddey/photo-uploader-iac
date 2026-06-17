@@ -1,0 +1,190 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  Photo-gallery | Root stack. Nests the five layers (network, data, edge,
+  compute, pipeline) as AWS::CloudFormation::Stack resources and wires them
+  with parameters + Fn::GetAtt instead of cross-stack exports. Deployed via Git
+  sync; child templates are pulled from S3 (see deploy/upload-templates.sh).
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: photo-uploader
+    Description: Project name used for resource names and tags.
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name used for resource names and tags.
+
+  # --- Nested-template hosting (see deploy/upload-templates.sh) ---
+  TemplatesBucket:
+    Type: String
+    Default: photo-uploader-cfn-templates-183631301567-eu-north-1
+    Description: S3 bucket holding the nested child templates.
+  TemplatesVersion:
+    Type: String
+    Description: >-
+      S3 key prefix (content hash of templates/) under which the child
+      templates were uploaded. Bumped by .githooks/pre-commit (or
+      deploy/upload-templates.sh) so a child-only edit still triggers a Git
+      sync redeploy.
+
+  # --- Network / compute knobs ---
+  ContainerPort:
+    Type: Number
+    Default: 80
+    Description: Port the ECS containers listen on.
+  ContainerImage:
+    Type: String
+    Default: 183631301567.dkr.ecr.eu-north-1.amazonaws.com/bootstrap-nginx:latest
+    Description: Bootstrap placeholder image; CodeDeploy swaps in the real image on the first pipeline run.
+  TaskCpu:
+    Type: String
+    Default: "256"
+    Description: Fargate task CPU units.
+  TaskMemory:
+    Type: String
+    Default: "512"
+    Description: Fargate task memory (MiB).
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Initial desired task count (auto scaling manages it afterwards).
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    Description: CloudWatch Logs retention for the app log group.
+
+  # --- Data knobs ---
+  DbName:
+    Type: String
+    Default: photogallery
+    Description: Initial PostgreSQL database name.
+  DbInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance class.
+  DbAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Allocated storage (GiB) for RDS.
+
+  # --- Pipeline knobs ---
+  GitHubOrg:
+    Type: String
+    Default: alfreddey
+    Description: GitHub org/user that owns the application repository.
+  GitHubRepo:
+    Type: String
+    Default: photo-uploader-app
+    Description: Application repository name allowed to assume the deploy role.
+  ImageTag:
+    Type: String
+    Default: latest
+    Description: ECR image tag that triggers and feeds the pipeline.
+  DeployConfigS3Key:
+    Type: String
+    Default: deploy/deploy-config.zip
+    Description: Artifact-bucket key of the deploy-config zip (appspec.yaml + taskdef.json).
+
+Resources:
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucket}.s3.${AWS::Region}.amazonaws.com/${TemplatesVersion}/network.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        ContainerPort: !Ref ContainerPort
+
+  DataStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucket}.s3.${AWS::Region}.amazonaws.com/${TemplatesVersion}/data.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        DbName: !Ref DbName
+        DbInstanceClass: !Ref DbInstanceClass
+        DbAllocatedStorage: !Ref DbAllocatedStorage
+        PrivateSubnets: !GetAtt NetworkStack.Outputs.PrivateSubnets
+        RdsSecurityGroupId: !GetAtt NetworkStack.Outputs.RdsSecurityGroupId
+
+  EdgeStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucket}.s3.${AWS::Region}.amazonaws.com/${TemplatesVersion}/edge.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        ImageBucketName: !GetAtt DataStack.Outputs.ImageBucketName
+        ImageBucketArn: !GetAtt DataStack.Outputs.ImageBucketArn
+        ImageBucketRegionalDomainName: !GetAtt DataStack.Outputs.ImageBucketRegionalDomainName
+
+  ComputeStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucket}.s3.${AWS::Region}.amazonaws.com/${TemplatesVersion}/compute.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        ContainerPort: !Ref ContainerPort
+        ContainerImage: !Ref ContainerImage
+        TaskCpu: !Ref TaskCpu
+        TaskMemory: !Ref TaskMemory
+        DesiredCount: !Ref DesiredCount
+        LogRetentionDays: !Ref LogRetentionDays
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PublicSubnets: !GetAtt NetworkStack.Outputs.PublicSubnets
+        PrivateSubnets: !GetAtt NetworkStack.Outputs.PrivateSubnets
+        AlbSecurityGroupId: !GetAtt NetworkStack.Outputs.AlbSecurityGroupId
+        EcsSecurityGroupId: !GetAtt NetworkStack.Outputs.EcsSecurityGroupId
+        DbSecretArn: !GetAtt DataStack.Outputs.DbSecretArn
+        ImageBucketArn: !GetAtt DataStack.Outputs.ImageBucketArn
+        ImageBucketName: !GetAtt DataStack.Outputs.ImageBucketName
+        RdsEndpoint: !GetAtt DataStack.Outputs.RdsEndpoint
+        CloudFrontDomainName: !GetAtt EdgeStack.Outputs.CloudFrontDomainName
+
+  PipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucket}.s3.${AWS::Region}.amazonaws.com/${TemplatesVersion}/pipeline.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        GitHubOrg: !Ref GitHubOrg
+        GitHubRepo: !Ref GitHubRepo
+        ImageTag: !Ref ImageTag
+        DeployConfigS3Key: !Ref DeployConfigS3Key
+        ArtifactBucketName: !GetAtt DataStack.Outputs.ArtifactBucketName
+        EcsClusterName: !GetAtt ComputeStack.Outputs.EcsClusterName
+        EcsServiceName: !GetAtt ComputeStack.Outputs.EcsServiceName
+        BlueTargetGroupName: !GetAtt ComputeStack.Outputs.BlueTargetGroupName
+        GreenTargetGroupName: !GetAtt ComputeStack.Outputs.GreenTargetGroupName
+        ProdListenerArn: !GetAtt ComputeStack.Outputs.ProdListenerArn
+        TestListenerArn: !GetAtt ComputeStack.Outputs.TestListenerArn
+
+Outputs:
+  AlbDnsName:
+    Description: Public DNS name of the ALB
+    Value: !GetAtt ComputeStack.Outputs.AlbDnsName
+
+  CloudFrontDomainName:
+    Description: Domain name of the CloudFront distribution
+    Value: !GetAtt EdgeStack.Outputs.CloudFrontDomainName
+
+  ImageBucketName:
+    Description: Name of the private image bucket
+    Value: !GetAtt DataStack.Outputs.ImageBucketName
+
+  ArtifactBucketName:
+    Description: Name of the CodePipeline artifact bucket
+    Value: !GetAtt DataStack.Outputs.ArtifactBucketName
+
+  EcrRepositoryUri:
+    Description: URI of the ECR repository (push target for GitHub Actions)
+    Value: !GetAtt PipelineStack.Outputs.EcrRepositoryUri
+
+  GitHubOidcProviderArn:
+    Description: ARN of the GitHub Actions OIDC provider
+    Value: !GetAtt PipelineStack.Outputs.GitHubOidcProviderArn

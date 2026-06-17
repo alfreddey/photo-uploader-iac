@@ -1,0 +1,23 @@
+# Git sync deployment file for stack: photo-uploader (root / nested)
+#
+# This is the ONLY synced stack now. It deploys root.yaml, which nests the five
+# layers (network, data, edge, compute, pipeline) as AWS::CloudFormation::Stack
+# resources. The child templates are pulled from S3, NOT from this repo:
+# the git hooks keep this in sync: .githooks/pre-commit bumps TemplatesVersion
+# below (offline, folded into the commit) and .githooks/pre-push uploads the
+# child templates to S3. The bump is what triggers the sync on push.
+template-file-path: root.yaml
+parameters:
+  ProjectName: photo-uploader
+  Environment: dev
+  TemplatesBucket: photo-uploader-cfn-templates-183631301567-eu-north-1
+  # Set automatically (content hash of the uploaded templates/). See
+  # deploy/upload-templates.sh and .githooks/pre-commit.
+  TemplatesVersion: SET_BY_UPLOAD_SCRIPT
+  GitHubOrg: alfreddey
+  GitHubRepo: photo-uploader-app
+  ImageTag: latest
+tags:
+  Project: photo-uploader
+  Environment: dev
+  ManagedBy: CloudFormation

@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 3 of 5 - Edge. CloudFront distribution with OAC in
+  Photo-gallery | Nested child - Edge. CloudFront distribution with OAC in
   front of the private image bucket, plus the bucket policy scoped to this
   distribution.
 
@@ -14,10 +14,15 @@ Parameters:
     Type: String
     Default: dev
     Description: Environment name used for resource names and tags.
-  DataStackName:
+  ImageBucketName:
     Type: String
-    Default: photo-uploader-data
-    Description: Name of the data stack whose exports are imported here.
+    Description: Name of the image bucket (from the data stack) the policy is applied to.
+  ImageBucketArn:
+    Type: String
+    Description: ARN of the image bucket (from the data stack) scoped in the policy.
+  ImageBucketRegionalDomainName:
+    Type: String
+    Description: Regional domain name of the image bucket (from the data stack) used as the CloudFront origin.
 
 Resources:
   ImageOriginAccessControl:
@@ -44,8 +49,7 @@ Resources:
           - Id: S3ImageOrigin
             # Regional domain name avoids the global-endpoint redirect window
             # right after bucket creation.
-            DomainName:
-              Fn::ImportValue: !Sub "${DataStackName}-ImageBucketRegionalDomainName"
+            DomainName: !Ref ImageBucketRegionalDomainName
             OriginAccessControlId: !GetAtt ImageOriginAccessControl.Id
             # With OAC the legacy OAI field must be present but empty.
             S3OriginConfig:
@@ -75,8 +79,7 @@ Resources:
   ImageBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket:
-        Fn::ImportValue: !Sub "${DataStackName}-ImageBucketName"
+      Bucket: !Ref ImageBucketName
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -85,23 +88,17 @@ Resources:
             Principal:
               Service: cloudfront.amazonaws.com
             Action: s3:GetObject
-            Resource: !Sub
-              - "${BucketArn}/*"
-              - BucketArn:
-                  Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+            Resource: !Sub "${ImageBucketArn}/*"
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
 
+# Outputs are read by the root template via Fn::GetAtt <NestedStack>.Outputs.*.
 Outputs:
   CloudFrontDomainName:
     Description: Domain name of the CloudFront distribution
     Value: !GetAtt Distribution.DomainName
-    Export:
-      Name: !Sub "${AWS::StackName}-CloudFrontDomainName"
 
   CloudFrontDistributionId:
     Description: ID of the CloudFront distribution
     Value: !Ref Distribution
-    Export:
-      Name: !Sub "${AWS::StackName}-CloudFrontDistributionId"

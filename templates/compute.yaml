@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >-
-  Photo-gallery | Stack 4 of 5 - Compute. ECS Fargate service behind a public
+  Photo-gallery | Nested child - Compute. ECS Fargate service behind a public
   ALB with blue/green target groups and CPU auto scaling; task roles live here
   to avoid a circular import with the pipeline stack.
 
@@ -14,18 +14,36 @@ Parameters:
     Type: String
     Default: dev
     Description: Environment name used for resource names and tags.
-  NetworkStackName:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID (from the network stack) for the target groups.
+  PublicSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnet IDs (from the network stack) for the ALB.
+  PrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs (from the network stack) for the ECS tasks.
+  AlbSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group (from the network stack) for the ALB.
+  EcsSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group (from the network stack) for the ECS tasks.
+  DbSecretArn:
     Type: String
-    Default: photo-uploader-network
-    Description: Name of the network stack whose exports are imported here.
-  DataStackName:
+    Description: ARN of the DB credentials secret (from the data stack).
+  ImageBucketArn:
     Type: String
-    Default: photo-uploader-data
-    Description: Name of the data stack whose exports are imported here.
-  EdgeStackName:
+    Description: ARN of the image bucket (from the data stack).
+  ImageBucketName:
     Type: String
-    Default: photo-uploader-edge
-    Description: Name of the edge stack whose exports are imported here.
+    Description: Name of the image bucket (from the data stack).
+  RdsEndpoint:
+    Type: String
+    Description: RDS endpoint address (from the data stack).
+  CloudFrontDomainName:
+    Type: String
+    Description: CloudFront distribution domain (from the edge stack).
   ContainerPort:
     Type: Number
     Default: 80
@@ -87,8 +105,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource:
-                  Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+                Resource: !Ref DbSecretArn
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -119,20 +136,15 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
-                Resource: !Sub
-                  - "${BucketArn}/*"
-                  - BucketArn:
-                      Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+                Resource: !Sub "${ImageBucketArn}/*"
               - Sid: ImageBucketList
                 Effect: Allow
                 Action: s3:ListBucket
-                Resource:
-                  Fn::ImportValue: !Sub "${DataStackName}-ImageBucketArn"
+                Resource: !Ref ImageBucketArn
               - Sid: ReadDbSecret
                 Effect: Allow
                 Action: secretsmanager:GetSecretValue
-                Resource:
-                  Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+                Resource: !Ref DbSecretArn
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -178,20 +190,16 @@ Resources:
               Protocol: tcp
           Environment:
             - Name: DB_HOST
-              Value:
-                Fn::ImportValue: !Sub "${DataStackName}-RdsEndpoint"
+              Value: !Ref RdsEndpoint
             - Name: DB_PORT
               Value: "5432"
             - Name: IMAGE_BUCKET
-              Value:
-                Fn::ImportValue: !Sub "${DataStackName}-ImageBucketName"
+              Value: !Ref ImageBucketName
             - Name: CLOUDFRONT_DOMAIN
-              Value:
-                Fn::ImportValue: !Sub "${EdgeStackName}-CloudFrontDomainName"
+              Value: !Ref CloudFrontDomainName
           Secrets:
             - Name: DB_CREDENTIALS
-              ValueFrom:
-                Fn::ImportValue: !Sub "${DataStackName}-DbSecretArn"
+              ValueFrom: !Ref DbSecretArn
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -212,11 +220,9 @@ Resources:
       Name: !Sub "${ProjectName}-${Environment}-alb"
       Type: application
       Scheme: internet-facing
-      Subnets: !Split
-        - ","
-        - Fn::ImportValue: !Sub "${NetworkStackName}-PublicSubnets"
+      Subnets: !Ref PublicSubnets
       SecurityGroups:
-        - Fn::ImportValue: !Sub "${NetworkStackName}-AlbSecurityGroupId"
+        - !Ref AlbSecurityGroupId
       Tags:
         - Key: Project
           Value: !Ref ProjectName
@@ -229,8 +235,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-blue"
-      VpcId:
-        Fn::ImportValue: !Sub "${NetworkStackName}-VpcId"
+      VpcId: !Ref VpcId
       TargetType: ip
       Protocol: HTTP
       Port: !Ref ContainerPort
@@ -257,8 +262,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-green"
-      VpcId:
-        Fn::ImportValue: !Sub "${NetworkStackName}-VpcId"
+      VpcId: !Ref VpcId
       TargetType: ip
       Protocol: HTTP
       Port: !Ref ContainerPort
@@ -320,11 +324,9 @@ Resources:
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: DISABLED
-          Subnets: !Split
-            - ","
-            - Fn::ImportValue: !Sub "${NetworkStackName}-PrivateSubnets"
+          Subnets: !Ref PrivateSubnets
           SecurityGroups:
-            - Fn::ImportValue: !Sub "${NetworkStackName}-EcsSecurityGroupId"
+            - !Ref EcsSecurityGroupId
       TaskDefinition: !Ref TaskDefinition
       LoadBalancers:
         - ContainerName: app
@@ -363,45 +365,32 @@ Resources:
         ScaleOutCooldown: 60
         ScaleInCooldown: 120
 
+# Outputs are read by the root template via Fn::GetAtt <NestedStack>.Outputs.*.
 Outputs:
   EcsClusterName:
     Description: Name of the ECS cluster
     Value: !Ref EcsCluster
-    Export:
-      Name: !Sub "${AWS::StackName}-EcsClusterName"
 
   EcsServiceName:
     Description: Name of the ECS service
     Value: !GetAtt EcsService.Name
-    Export:
-      Name: !Sub "${AWS::StackName}-EcsServiceName"
 
   AlbDnsName:
     Description: Public DNS name of the ALB
     Value: !GetAtt LoadBalancer.DNSName
-    Export:
-      Name: !Sub "${AWS::StackName}-AlbDnsName"
 
   BlueTargetGroupName:
     Description: Name of the blue target group
     Value: !GetAtt BlueTargetGroup.TargetGroupName
-    Export:
-      Name: !Sub "${AWS::StackName}-BlueTargetGroupName"
 
   GreenTargetGroupName:
     Description: Name of the green target group
     Value: !GetAtt GreenTargetGroup.TargetGroupName
-    Export:
-      Name: !Sub "${AWS::StackName}-GreenTargetGroupName"
 
   ProdListenerArn:
     Description: ARN of the production listener (port 80)
     Value: !Ref ProdListener
-    Export:
-      Name: !Sub "${AWS::StackName}-ProdListenerArn"
 
   TestListenerArn:
     Description: ARN of the test listener (port 8080)
     Value: !Ref TestListener
-    Export:
-      Name: !Sub "${AWS::StackName}-TestListenerArn"
