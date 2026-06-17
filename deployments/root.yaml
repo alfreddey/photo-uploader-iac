@@ -13,7 +13,7 @@ parameters:
   TemplatesBucket: photo-uploader-cfn-templates-183631301567-eu-north-1
   # Set automatically (content hash of the uploaded templates/). See
   # deploy/upload-templates.sh and .githooks/pre-commit.
-  TemplatesVersion: SET_BY_UPLOAD_SCRIPT
+  TemplatesVersion: f1f96ccff8f5
   GitHubOrg: alfreddey
   GitHubRepo: photo-uploader-app
   ImageTag: latest
