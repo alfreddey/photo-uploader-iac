@@ -2,15 +2,16 @@
 # Regenerate taskdef.json from the live task definition and upload
 # deploy-config.zip to the artifact bucket.
 #
-# Run this after every stack tear-down/recreate, once the compute stack is
-# CREATE_COMPLETE: the task definition's environment values (RDS endpoint,
-# secret ARN, CloudFront domain) are stack-generated and change each cycle,
-# so the zip must be rebuilt from the live revision rather than from a
-# committed copy. The pipeline's S3 source action (5-pipeline.yaml) fails
-# with "object not found" until this object exists.
+# Run this after every stack tear-down/recreate, once the root stack (and its
+# compute nested stack) is CREATE_COMPLETE: the task definition's environment
+# values (RDS endpoint, secret ARN, CloudFront domain) are stack-generated and
+# change each cycle, so the zip must be rebuilt from the live revision rather
+# than from a committed copy. The pipeline's S3 source action
+# (templates/pipeline.yaml) fails with "object not found" until this object
+# exists.
 set -euo pipefail
 
-REGION="${REGION:-us-east-1}"
+REGION="${REGION:-eu-north-1}"
 FAMILY="${FAMILY:-photo-uploader-dev}"
 BUCKET="${BUCKET:-photo-uploader-dev-artifacts-183631301567}"
 KEY="${KEY:-deploy/deploy-config.zip}"

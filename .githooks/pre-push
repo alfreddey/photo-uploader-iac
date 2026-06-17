@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# pre-push hook: upload the nested child templates to S3 (under their
+# content-hash prefix) BEFORE the push reaches GitHub, so CloudFormation Git
+# sync never deploys root.yaml against a missing TemplateURL. This is the only
+# step that needs AWS credentials.
+#
+# The TemplatesVersion bump itself is folded into the commit by
+# .githooks/pre-commit, so a normal `git commit` + `git push` reflects in a
+# single push. This hook just makes sure S3 matches the committed version.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Bypass with:            git push --no-verify   (templates are NOT uploaded)
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Working tree must match committed templates so we upload exactly what's pushed.
+if ! git diff --quiet -- templates/; then
+  echo "[pre-push] templates/ has uncommitted changes; commit them first." >&2
+  exit 1
+fi
+
+hash="$(./deploy/upload-templates.sh version)"
+current="$(awk '/^[[:space:]]*TemplatesVersion:/{print $2; exit}' deployments/root.yaml)"
+
+# The committed TemplatesVersion should already match (pre-commit sets it). If it
+# does not, the bump never got committed (e.g. a --no-verify commit). Re-commit
+# so pre-commit folds it in, rather than uploading a version that isn't pushed.
+if [ "$current" != "$hash" ]; then
+  cat >&2 <<EOF
+[pre-push] TemplatesVersion (${current}) != templates hash (${hash}).
+The pre-commit hook normally folds this bump in. Re-commit so it runs:
+    git add templates/ && git commit --amend --no-edit
+then push again.
+EOF
+  exit 1
+fi
+
+echo "[pre-push] ensuring templates are in S3 at version ${hash}..."
+./deploy/upload-templates.sh upload
